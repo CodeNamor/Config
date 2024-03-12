@@ -1,0 +1,60 @@
+{
+  "Env": "local",
+  "Port": 8000,
+  "Logging": {
+    "Level": "trace",
+    "GrayLogURL": "10.0.1.1"
+  },
+  "AuthServiceConfig": {
+    "Url": "http://www.secure.org",
+    "Uid": "auth_uid",
+    "Pwd": "auth_pwd"
+  },
+  "DefaultComponentConfigs": {
+    "ServiceLogging": {
+      "LogCallDuration": 2
+    },
+    "Client": {
+      "Timeout": 10,
+      "IdleConnTimeout": 30,
+      "MaxIdleConnsPerHost": 16,
+      "MaxConnsPerHost": 32,
+      "MaxRetries": 2,
+      "DisableCompression": 1,
+      "CABundlePath": "example_cabundle.pem"
+    }
+  },
+  "ServiceConfigs": [
+    {
+      "Name": "ABS",
+      "Url": "https://some.url.com",
+
+      "AuthRequired": true,
+      "AuthCredentials": {
+        "KeyComponent1": "keyc_1",
+        "KeyComponent2": "keyc_2",
+        "Euuid": "abs_euuid"
+      },
+      "AuthKey": "",
+      "Endpoints": [
+        {
+          "Name": "ClaimStatus",
+          "Path": "/mvClaimStatuses?"
+        }
+      ],
+      "ComponentConfigOverrides":{
+        "ServiceLogging": {
+          "LogCallDuration": 1
+        },
+        "Client": {
+          "Timeout": 30
+        }
+      }
+    }
+  ],
+  "Options": {
+    "DummyBool": true,
+    "DummyNum": 8,
+    "DummyString": "a dumb string"
+  }
+}
