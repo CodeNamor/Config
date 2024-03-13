@@ -148,8 +148,6 @@ data_*/
 .idea/modules.xml
 .idea/vcs.xml
 errors.go
-go.mod
-go.sum
 logging.go
 logging_test.go
 timer.go
