@@ -3,7 +3,7 @@ package config
 import (
 	"encoding/json"
 
-	"github.com/codenamor/http/apiclient"
+	"github.com/CodeNamor/http/apiclient"
 )
 
 // ServiceConfig describes all information required to connect to a service and any of its endpoints

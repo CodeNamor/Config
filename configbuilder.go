@@ -19,15 +19,16 @@ import (
 	"github.com/jinzhu/copier"
 	log "github.com/sirupsen/logrus"
 
+	cnErrors "github.com/CodeNamor/Common/errors"
 	compath "github.com/CodeNamor/Common/path"
-	"github.com/CodeNamor/HTTP/apiclient"
-	_ "github.com/CodeNamor/errors"
+	"github.com/CodeNamor/http/apiclient"
 )
 
 type configBuilder interface {
 	Load(string) (*os.File, error)
 	Read(io.Reader) error
 	InitClientFn(RetryClientBuilderFn) (clientFromConfigFn, error)
+	LoadServiceAuthKeys(AuthKeyGetter, apiclient.RetryClient) []error
 	GetConfig() *Config
 	GetConfigPath() string
 }
@@ -47,7 +48,14 @@ func (b *defaultConfigBuilder) GetConfigPath() string {
 
 // LoadCertPool reads certificates from a CA bundle file and loads them into a certificate pool
 func LoadCertPool(caBundlePath string) (*x509.CertPool, error) {
-	certData, _ := ioutil.ReadFile(caBundlePath)
+	certData, err := ioutil.ReadFile(caBundlePath)
+	if err != nil {
+		errMsg := &cnErrors.ErrorLog{
+			RootCause: "Error reading cert file " + caBundlePath,
+			Err:       err,
+		}
+		return nil, errMsg
+	}
 
 	certPool := x509.NewCertPool()
 	ok := certPool.AppendCertsFromPEM(certData)
@@ -66,7 +74,8 @@ type RetryClientBuilderFn func(int, *http.Client) apiclient.RetryClient
 type bundleMap map[string]*x509.CertPool
 
 // loadCABundle checks bundleMap to see if a caBundle exists and uses it if found
-// otherwise it loads the cleanedCABundlePath and stores it by original caBundlePath, so it can be found later
+// otherwise it loads the cleanedCABundlePath and stores it by original caBundlePath
+// so it can be found later
 func loadCABundle(bundleMap bundleMap, cleanedCABundlePath string, caBundlePath string) error {
 	if caBundlePath == "" { // nothing to load
 		return nil
@@ -84,7 +93,7 @@ func loadCABundle(bundleMap bundleMap, cleanedCABundlePath string, caBundlePath 
 }
 
 // InitClientFn initializes the function used to construct a client
-// for a service loading the ca bundles.
+// for a service loading the cabundles.
 // You will provide the serviceConfig.MergedComponentConfigs().Client as the value to the getClient fn
 func (b *defaultConfigBuilder) InitClientFn(rbfn RetryClientBuilderFn) (clientFromConfigFn, error) {
 	DefaultHTTPClientConfig := b.config.DefaultComponentConfigs.Client
@@ -116,9 +125,16 @@ func (b *defaultConfigBuilder) Load(path string) (*os.File, error) {
 	log.Trace("Loading config file: " + path)
 	b.configPath = path
 
-	file, _ := os.Open(path) //TODO: Handle Error
+	file, err := os.Open(path)
+	if err != nil {
+		msg := &cnErrors.ErrorLog{
+			RootCause: "Error opening config file " + path,
+			Err:       err,
+		}
+		return nil, msg
+	}
 
-	return file, nil
+	return file, err
 }
 
 // Read parses the JSON data and creates mergedComponentConfigs
@@ -135,7 +151,7 @@ func (b *defaultConfigBuilder) Read(configData io.Reader) error {
 	// now populate mergedComponentConfigs using serviceConfig and defaults
 	mergeError := mergeComponentConfigsForAllServices(configuration) // updates in place
 	if mergeError != nil {
-		return errors.New("error merging component configs")
+		return cnErrors.WithErrorAndCause(mergeError, "Error merging component configs")
 	}
 
 	NewHashCode(configuration.Hash)
@@ -146,7 +162,7 @@ func (b *defaultConfigBuilder) Read(configData io.Reader) error {
 func buildInitialConfig(configData io.Reader) (*Config, error) {
 	theBytes, readerError := ioutil.ReadAll(configData)
 	if readerError != nil {
-		return nil, errors.New("error reading config data")
+		return nil, cnErrors.WithErrorAndCause(readerError, "Error reading config data")
 	}
 
 	byteReader := bytes.NewReader(theBytes)
@@ -156,31 +172,37 @@ func buildInitialConfig(configData io.Reader) (*Config, error) {
 	decoder.DisallowUnknownFields()
 	decoderError := decoder.Decode(&c)
 	if decoderError != nil {
-		return nil, errors.New("error decoding config data")
+		return nil, cnErrors.WithErrorAndCause(decoderError, "Error decoding config data")
 	}
 	c.Hash = fmt.Sprintf("%x", md5.Sum(theBytes))
 
 	return c, nil
 }
 
-/*
 // LoadServiceAuthKeys attempts to get an auth key from the keyGetter, using the the provided client for communication,
 // for each service config that requires auth to be used.
-func (b *defaultConfigBuilder) LoadServiceAuthKeys(client apiclient.RetryClient) []error {
+func (b *defaultConfigBuilder) LoadServiceAuthKeys(keyGetter AuthKeyGetter, client apiclient.RetryClient) []error {
 	log.Trace("Loading auth keys")
 	errs := make([]error, 0)
-	var _ error
+	var err error
 
 	for name, serviceConfig := range b.config.ServiceConfigs {
 		if serviceConfig.AuthRequired {
-			if serviceConfig.AuthKey == "" {
+			serviceConfig.AuthKey, err = keyGetter.GetServiceKey(serviceConfig, client)
+
+			if err != nil {
+				errs = append(errs, &cnErrors.ErrorLog{
+					RootCause: "Error retrieving auth key for " + name + ":",
+					Err:       err,
+				})
+			} else if serviceConfig.AuthKey == "" {
 				errs = append(errs, errors.New("Empty auth key for "+name))
 			}
 		}
 	}
 
 	return errs
-} */
+}
 
 // mergeComponentConfigsForAllServices populates mergedComponentConfigs
 // using serviceConfig and defaults
@@ -189,7 +211,7 @@ func mergeComponentConfigsForAllServices(c *Config) error {
 	for k, serviceConfig := range c.ServiceConfigs {
 		err := mergeCompConfigs(&serviceConfig.ComponentConfigOverrides, &defaultCompConfigs, &serviceConfig.mergedComponentConfigs)
 		if err != nil {
-			return errors.New("Error merging component config: " + k)
+			return cnErrors.WithErrorAndCause(err, "Error merging component config: "+k)
 		}
 	}
 	return nil
@@ -224,6 +246,7 @@ func mergeCompConfigs(serviceCCO *ComponentConfigs, defaultCC *ComponentConfigs,
 }
 
 func createHTTPClient(mc ClientConfig, mapCertPools bundleMap, rbfn RetryClientBuilderFn) apiclient.RetryClient {
+	// mc mergedClient has already been merged from serviceCCO and defaultCC
 	disableCompression := false
 	if mc.DisableCompression == True {
 		disableCompression = true
@@ -232,7 +255,7 @@ func createHTTPClient(mc ClientConfig, mapCertPools bundleMap, rbfn RetryClientB
 	tlsConfig := &tls.Config{}
 	if mc.InsecureSkipVerify == True {
 		tlsConfig.InsecureSkipVerify = true
-	} else {
+	} else { // not skipping, so set cert pool
 		certPool, ok := mapCertPools[mc.CABundlePath]
 		if ok {
 			tlsConfig.RootCAs = certPool

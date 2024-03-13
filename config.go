@@ -72,7 +72,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/CodeNamor/HTTP/apiclient"
+	"github.com/CodeNamor/http/apiclient"
 	"github.com/kr/pretty"
 	log "github.com/sirupsen/logrus"
 )
@@ -88,8 +88,9 @@ type Config struct {
 	//can be overridden by individual service configs in their component configs
 	DefaultComponentConfigs ComponentConfigs
 
-	ServiceConfigs  ServicesMap
-	DatabaseConfigs DatabasesMap
+	ServiceConfigs    ServicesMap
+	DatabaseConfigs   DatabasesMap
+	AuthServiceConfig AuthServiceConfig
 	//Options is a catch-all property for config values that are specific to an API. Use this to add custom config
 	//keys before modifying this Config structure.
 	Options map[string]interface{}
@@ -106,7 +107,8 @@ type Config struct {
 
 // LoggingConfig holds the string representation of the logging level and the graylog URL.
 type LoggingConfig struct {
-	Level string
+	Level      string
+	GrayLogURL string
 }
 
 // ComponentConfigs describe individual categories of components that can be configured at default level and, more
@@ -134,7 +136,7 @@ type ClientConfig struct {
 	CABundlePath        string
 }
 
-// configFlag indicates a boolean value in the config file that can be of three states: False (1), True (2), or UnSet(0)
+// configflag indicates a boolean value in the config file that can be of three states: False (1), True (2), or UnSet(0)
 // indicating that no value was given for the value in the config. This helps us distinguish between when a boolean
 // config value was set to false or whether it was not set at all, which is necessary because the zero value of a
 // boolean property is false, leading to ambiguity about whether a config property was set to false or not set at all.
@@ -147,14 +149,24 @@ const (
 	True
 )
 
+// AuthServiceConfig models the credentials necessary to authenticate to a a service for getting auth keys
+type AuthServiceConfig struct {
+	Url string
+	Uid string
+	Pwd string
+}
+
+// NewAuthKeyGetterFn structures a function that creates a getting auth keys from the auth service config
+type NewAuthKeyGetterFn func(AuthServiceConfig) AuthKeyGetter
+
 type clientFromConfigFn func(ClientConfig) apiclient.RetryClient
 
 // New takes a config file path and name and returns a pointer to a loaded Config
 func New(configPath string) (*Config, []error) {
-	return newConfig(&defaultConfigBuilder{}, apiclient.NewExtendedHTTPClient, configPath)
+	return newConfig(&defaultConfigBuilder{}, apiclient.NewExtendedHTTPClient, newAdapterService, configPath)
 }
 
-func newConfig(builder configBuilder, retryClientBuilderFn RetryClientBuilderFn, configPath string) (*Config, []error) {
+func newConfig(builder configBuilder, retryClientBuilderFn RetryClientBuilderFn, authKeyService NewAuthKeyGetterFn, configPath string) (*Config, []error) {
 	var err error
 
 	configFile, err := builder.Load(configPath)
@@ -173,12 +185,19 @@ func newConfig(builder configBuilder, retryClientBuilderFn RetryClientBuilderFn,
 		return nil, []error{err}
 	}
 
+	// setup default client used for getting auth keys
 	builder.GetConfig().DefaultHTTPClient = buildClientFn(builder.GetConfig().DefaultComponentConfigs.Client)
 
 	// merge service Overrides with defaults
 	for _, serviceConfig := range builder.GetConfig().ServiceConfigs {
 		// log the merged settings that will govern each ServiceConfig
 		log.Info(pretty.Sprintf("ServiceName: %v ServiceConfigs.MergedComponentConfigs: %v", serviceConfig.Name, serviceConfig.MergedComponentConfigs()))
+	}
+
+	authService := authKeyService(builder.GetConfig().AuthServiceConfig)
+	errs := builder.LoadServiceAuthKeys(authService, builder.GetConfig().DefaultHTTPClient)
+	if len(errs) != 0 {
+		return nil, errs
 	}
 
 	// prepare each service client
